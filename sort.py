@@ -3,167 +3,196 @@ import shutil
 import threading
 import torch
 import torchvision.transforms as transforms
-from facenet_pytorch import MTCNN, InceptionResnetV1
 import cv2 as cv
 from PIL import Image
 import numpy as np
 from tqdm import tqdm
+from colored import fg, attr
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
-# Create face detector
-mtcnn = MTCNN(select_largest=False, device=device)
-resnet = InceptionResnetV1(pretrained='vggface2', device=device).eval()
-anchors = {}
-THRESH = 0.6
+import config
+from initializer import Init
 
 
-def extract_faces(path):
-    """
-    Load image from disk
-    """
-    image = cv.imread(path)
-    h, w, _ = image.shape
+class Sorter(Init):
+    def __init__(self, images_root: str, anchor_dir: str):
+        super().__init__()
+        self.root = images_root
+        self.anchor = anchor_dir
 
-    if image is None:
-        print(f'image was None - check it! {path}')
-        return []
-    else:
-        image = cv.resize(image, (w // 2, h // 2))
-    h, w, _ = image.shape
+        self.anchors = {}
+        self.load_anchors()
 
-    faces_coord, conf = mtcnn.detect(image)
+    @classmethod
+    def extract_faces(cls, path: str) -> list:
+        """
+        Extract faces from image in format BGR using MTCNN
+        :param path: path to the image in disk
+        :returns: list of cropped faces
+        """
+        image = cv.imread(path)
+        h, w, _ = image.shape
 
-    if faces_coord is None or len(faces_coord) == 0:
-        return []
+        if image is None:
+            Sorter.log_simple_info(f'image was None - check it! {path}')
+            return []
+        else:
+            image = cv.resize(image, (w // 2, h // 2))  # downscale image for faster execution
+        h, w, _ = image.shape
 
-    faces_coord = faces_coord.astype(int)
-    faces_coord = [face for face, c in zip(faces_coord, conf) if c >= 0.9]
-    faces = []
-    for face in faces_coord:
-        x1, y1, x2, y2 = face
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = min(w, x2)
-        y2 = min(h, y2)
+        faces_coord, conf = Sorter.mtcnn.detect(image)  # detect faces using MTCNN
 
-        margin = int((x2 - x1) * 0.1)
-        x1 = x1 - margin if x1 - margin >= 0 else 0
-        x2 = x2 + margin if x2 - margin < w else w - 1
-        y1 = y1 - margin * 2 if y1 - margin * 2 >= 0 else 0  # capture forehead
-        y2 = y2 + int(margin * 1.2) if y2 - int(margin * 1.2) < h else h - 1  # capture chin
+        if faces_coord is None or len(faces_coord) == 0:
+            return []
 
-        faces.append(image[y1:y2, x1:x2])
-    return faces
+        faces_coord = faces_coord.astype(int)
+        faces_coord = [face for face, c in zip(faces_coord, conf) if c >= 0.9]
+        faces = []
+        for face in faces_coord:
+            x1, y1, x2, y2 = face
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+            x2 = min(w, x2)
+            y2 = min(h, y2)
 
+            margin = int((x2 - x1) * 0.1)               # calculate margin
+            x1 = max(x1 - margin, 0)
+            x2 = min(x2 + margin, w - 1)
+            y1 = max(y1 - margin * 2, 0)                # capture forehead
+            y2 = min(y2 + int(margin * 1.2), h - 1)     # capture chin
 
-def load_anchors(path):
-    """
-    Load friend faces as embedding into anchors list
-    """
-    image_names = os.listdir(path)
+            faces.append(image[y1:y2, x1:x2])
+        return faces
 
-    def show_face(face):
-        cv.imshow('choose name', face)
-        cv.waitKey(0)
+    @classmethod
+    def create_image(cls, image, size: int = 200):
+        """
+        Align image on canvas
+        :param image: image to align
+        :param size: size of the canvas
+        :returns: the aligned image
+        """
+        height, width, _ = image.shape
+        prop = width / height
 
-    def get_name():
-        name = input('choose person name: ')
-        anchors[name] = (image_to_embedding(face), [], face)
-        load_anchors.name_chosen_flag = True
-        return name
+        if width > height:
+            width = size
+            height = int(size / prop)
+        else:
+            width = int(prop * size)
+            height = size
+        image = cv.resize(image, (width, height))
 
-    for img_name in image_names:
-        img_name = os.path.join(path, img_name)
-        faces = extract_faces(img_name)
-        for face in faces:
-            t1 = threading.Thread(target=show_face, args=(face,))
-            t2 = threading.Thread(target=get_name)
-            t1.start()
-            t2.start()
-            t1.join()
-            t2.join()
-    print('loaded')
+        # create a white canvas
+        canvas = np.ones((size, size, 3), dtype=np.uint8) * 255
+        start_x = (size - width) // 2
+        start_y = (size - height) // 2
 
+        # position the cropped face in the middle of the canvas
+        canvas[start_y: start_y + height, start_x: start_x + width] = image
+        return canvas
 
-def create_image(cut, size=200):
-    height, width, _ = cut.shape
-    prop = width / height
+    @classmethod
+    def image_to_embedding(cls, image):
+        """
+        Preprocess image and generate embedding using InceptonResnetV1
+        :param image: image to preprocess
+        :returns: embedding tensor
+        """
+        image = cv.cvtColor(image, cv.COLOR_BGR2RGB)
+        image = Sorter.create_image(image, 160)
+        image = Image.fromarray(image)
 
-    if width > height:
-        width = size
-        height = int(size / prop)
-    else:
-        width = int(prop * size)
-        height = size
-    cut = cv.resize(cut, (width, height))
+        transform = transforms.Compose([
+            transforms.ToTensor(),                                              # Convert the image to a tensor
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),    # Normalize the image
+        ])
 
-    # create a white canvas
-    canvas = np.ones((size, size, 3), dtype=np.uint8) * 255
-    start_x = (size - width) // 2
-    start_y = (size - height) // 2
+        preprocessed_image = transform(image)
 
-    # position the cropped face in the middle of the canvas
-    canvas[start_y: start_y + height, start_x: start_x + width] = cut
-    return canvas
+        Sorter.resnet.classify = True
+        embedding = Sorter.resnet(preprocessed_image.unsqueeze(0).to(config.DEVICE))
+        return embedding
 
+    @classmethod
+    def compare_pair(cls, em1, em2):
+        """
+        Compute the cosine similarity between the embedding vectors
+        :param em1: first embedding
+        :param em2: second embedding
+        """
+        dist = torch.nn.functional.cosine_similarity(em1, em2)
+        return dist.item()
 
-def image_to_embedding(image):
-    """
-    Create embedding from processed image
-    """
-    image = cv.cvtColor(image, cv.COLOR_BGR2RGB)
-    image = create_image(image, 160)
-    image = Image.fromarray(image)
+    def load_anchors(self):
+        """
+        Load faces from the anchor images
+        """
+        image_names = os.listdir(self.anchor)
 
-    transform = transforms.Compose([
-        transforms.ToTensor(),  # Convert the image to a tensor
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),  # Normalize the image
-    ])
+        def show_face(face):
+            cv.imshow('choose name', face)
+            cv.waitKey(0)
 
-    preprocessed_image = transform(image)
+        def get_name():
+            name = input('choose person name: ')
+            self.anchors[name] = [Sorter.image_to_embedding(face), [], face]
+            Sorter.load_anchors.name_chosen_flag = True
+            return name
 
-    resnet.classify = True
-    embedding = resnet(preprocessed_image.unsqueeze(0).to(device))
-    return embedding
+        for img_name in image_names:
+            img_name = os.path.join(self.anchor, img_name)
+            faces = Sorter.extract_faces(img_name)
+            for face in faces:
+                t1 = threading.Thread(target=show_face, args=(face,))
+                t2 = threading.Thread(target=get_name)
 
+                t1.start()
+                t2.start()
 
-def compare_pair(em1, em2):
-    dist = torch.nn.functional.cosine_similarity(em1, em2)  # cosine_sim = 1 - cosine
-    # print(f'dist {dist.item()}')
-    return dist.item()
+                t1.join()
+                t2.join()
+        Sorter.log_simple_info('anchors loaded')
 
+    def sort(self):
+        """
+        Sort images to respective persons in the anchor images
+        using format:
 
-def compare_all(folders_path):
-    """
-    Sort folder to anchors
-    """
-    folder_paths = os.listdir(folders_path)
-    for path in folder_paths:
-        print(f'current folder: {path}')
-        image_paths = os.listdir(os.path.join(folders_path, path))
-        for image_path in tqdm(image_paths):
-            image_path = os.path.join(folders_path, path, image_path)
-            temp_f = extract_faces(image_path)
-            faces = [image_to_embedding(face) for face in temp_f]
-            # print(f'current img: {image_path}')
+        root folder
+                |__ sub dir 1
+                |__ sub dir 2
+                |__ ...
+        anchor images
+        """
+        folder_paths = os.listdir(self.root)
 
-            for index, face in enumerate(faces):
-                for name, (em, _, _) in anchors.items():
-                    if (dist := compare_pair(face, em)) >= THRESH:
-                        anchors[name][1].append(image_path)
-                        print('match!')
-                        # save image in the folder
-                        cv.imwrite(os.path.join(folders_path, name, f'{dist}.jpg'), temp_f[index])
-                        print(f"saved to {os.path.join(folders_path, name, f'{dist}.jpg')}")
-                        break
+        for path in folder_paths:
+            Sorter.log_simple_info(f'current folder: {path}')
+            image_paths = os.listdir(os.path.join(self.root, path))
 
-    for key, (_, paths, _) in anchors.items():
-        anc_path = os.path.join(folders_path, str(key))
-        os.makedirs(anc_path, exist_ok=True)
-        for path in paths:
-            shutil.copy(path, anc_path)
+            for image_path in tqdm(image_paths):
+                image_path = os.path.join(self.root, path, image_path)
+                temp_f = Sorter.extract_faces(image_path)
+                faces = [Sorter.image_to_embedding(face) for face in temp_f]
 
+                for index, face in enumerate(faces):
+                    for name, (em, _, _) in self.anchors.items():
+                        if (dist := Sorter.compare_pair(face, em)) >= config.COS_THRESH:
+                            self.anchors[name][1].append(image_path)
+                            Sorter.log_simple_info('match!')
 
-load_anchors(r'')
-compare_all(r'')
+                            # save image in the folder
+                            cv.imwrite(os.path.join(self.root, name, f'{dist}.jpg'), temp_f[index])
+                            Sorter.log_simple_info(f"saved to {os.path.join(self.root, name, f'{dist}.jpg')}")
+                            break
+
+            for key, (_, paths, _) in self.anchors.items():
+                anc_path = os.path.join(self.root, str(key))
+                os.makedirs(anc_path, exist_ok=True)
+                for _path in paths:
+                    shutil.copy(_path, anc_path)
+                self.anchors[key][1] = []
+
+    @staticmethod
+    def log_simple_info(msg):
+        print(f'{fg("light_blue")}[INFO] {attr("reset")}{msg}')
