@@ -7,7 +7,7 @@ from facenet_pytorch import MTCNN, InceptionResnetV1
 import cv2 as cv
 from PIL import Image
 import numpy as np
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
@@ -142,13 +142,13 @@ def compare_all(folders_path):
     for path in folder_paths:
         print(f'current folder: {path}')
         image_paths = os.listdir(os.path.join(folders_path, path))
-        for image_path in image_paths:
+        for image_path in tqdm(image_paths):
             image_path = os.path.join(folders_path, path, image_path)
             temp_f = extract_faces(image_path)
             faces = [image_to_embedding(face) for face in temp_f]
             # print(f'current img: {image_path}')
 
-            for index, face in tqdm(enumerate(faces)):
+            for index, face in enumerate(faces):
                 for name, (em, _, _) in anchors.items():
                     if (dist := compare_pair(face, em)) >= THRESH:
                         anchors[name][1].append(image_path)
