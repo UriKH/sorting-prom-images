@@ -7,9 +7,6 @@ from facenet_pytorch import MTCNN, InceptionResnetV1
 import cv2 as cv
 from PIL import Image
 import numpy as np
-from matplotlib import pyplot as plt
-from tqdm.notebook import tqdm
-
 
 # Create face detector
 mtcnn = MTCNN(select_largest=False, device='cpu')
