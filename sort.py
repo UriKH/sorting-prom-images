@@ -7,13 +7,15 @@ from facenet_pytorch import MTCNN, InceptionResnetV1
 import cv2 as cv
 from PIL import Image
 import numpy as np
+from tqdm.notebook import tqdm
+
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 # Create face detector
-mtcnn = MTCNN(select_largest=False, device='cpu')
-resnet = InceptionResnetV1(pretrained='vggface2').eval()
-
+mtcnn = MTCNN(select_largest=False, device=device)
+resnet = InceptionResnetV1(pretrained='vggface2', device=device).eval()
 anchors = {}
-THRESH = 0.5
+THRESH = 0.6
 
 
 def extract_faces(path):
@@ -27,7 +29,7 @@ def extract_faces(path):
         print(f'image was None - check it! {path}')
         return []
     else:
-        image = cv.resize(image, (w // 2, h //2))
+        image = cv.resize(image, (w // 2, h // 2))
     h, w, _ = image.shape
 
     faces_coord, conf = mtcnn.detect(image)
@@ -75,7 +77,7 @@ def load_anchors(path):
         img_name = os.path.join(path, img_name)
         faces = extract_faces(img_name)
         for face in faces:
-            t1 = threading.Thread(target=show_face, args=(face, ))
+            t1 = threading.Thread(target=show_face, args=(face,))
             t2 = threading.Thread(target=get_name)
             t1.start()
             t2.start()
@@ -122,13 +124,13 @@ def image_to_embedding(image):
     preprocessed_image = transform(image)
 
     resnet.classify = True
-    embedding = resnet(preprocessed_image.unsqueeze(0))
+    embedding = resnet(preprocessed_image.unsqueeze(0).to(device))
     return embedding
 
 
 def compare_pair(em1, em2):
-    dist = 1 - torch.nn.functional.cosine_similarity(em1, em2) # cosine_sim = 1 - cosine
-    print(f'dist {dist.item()}')
+    dist = torch.nn.functional.cosine_similarity(em1, em2)  # cosine_sim = 1 - cosine
+    # print(f'dist {dist.item()}')
     return dist.item()
 
 
@@ -138,18 +140,22 @@ def compare_all(folders_path):
     """
     folder_paths = os.listdir(folders_path)
     for path in folder_paths:
+        print(f'current folder: {path}')
         image_paths = os.listdir(os.path.join(folders_path, path))
         for image_path in image_paths:
             image_path = os.path.join(folders_path, path, image_path)
             temp_f = extract_faces(image_path)
             faces = [image_to_embedding(face) for face in temp_f]
-            print(f'current img: {image_path}')
+            # print(f'current img: {image_path}')
 
-            for face in faces:
+            for index, face in tqdm(enumerate(faces)):
                 for name, (em, _, _) in anchors.items():
-                    if compare_pair(face, em) <= THRESH:
+                    if (dist := compare_pair(face, em)) >= THRESH:
                         anchors[name][1].append(image_path)
                         print('match!')
+                        # save image in the folder
+                        cv.imwrite(os.path.join(folders_path, name, f'{dist}.jpg'), temp_f[index])
+                        print(f"saved to {os.path.join(folders_path, name, f'{dist}.jpg')}")
                         break
 
     for key, (_, paths, _) in anchors.items():
@@ -159,5 +165,5 @@ def compare_all(folders_path):
             shutil.copy(path, anc_path)
 
 
-load_anchors(r'C:\Users\urikh\OneDrive\Desktop\ancs')
-compare_all(r'C:\Users\urikh\OneDrive\Desktop\temp')
+load_anchors(r'')
+compare_all(r'')
