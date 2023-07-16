@@ -4,11 +4,12 @@ import threading
 import torch
 import torchvision.transforms as transforms
 import cv2 as cv
-from PIL import Image
+from PIL import Image, ImageTk
 import numpy as np
 from tqdm import tqdm
 from colored import fg, attr
-
+from math import floor
+import tkinter as tk
 import config
 from initializer import Init
 
@@ -23,18 +24,18 @@ class Sorter(Init):
         self.load_anchors()
 
     @classmethod
-    def extract_faces(cls, path: str) -> list:
+    def extract_faces(cls, path: str) -> tuple[list, list]:
         """
         Extract faces from image in format BGR using MTCNN
         :param path: path to the image in disk
-        :returns: list of cropped faces
+        :returns: list of cropped faces and their coordinates
         """
         image = cv.imread(path)
         h, w, _ = image.shape
 
         if image is None:
             Sorter.log_simple_info(f'image was None - check it! {path}')
-            return []
+            return [], []
         else:
             image = cv.resize(image, (w // 2, h // 2))  # downscale image for faster execution
         h, w, _ = image.shape
@@ -42,7 +43,7 @@ class Sorter(Init):
         faces_coord, conf = Sorter.mtcnn.detect(image)  # detect faces using MTCNN
 
         if faces_coord is None or len(faces_coord) == 0:
-            return []
+            return [], []
 
         faces_coord = faces_coord.astype(int)
         faces_coord = [face for face, c in zip(faces_coord, conf) if c >= 0.9]
@@ -54,14 +55,14 @@ class Sorter(Init):
             x2 = min(w, x2)
             y2 = min(h, y2)
 
-            margin = int((x2 - x1) * 0.1)               # calculate margin
+            margin = int((x2 - x1) * 0.1)  # calculate margin
             x1 = max(x1 - margin, 0)
             x2 = min(x2 + margin, w - 1)
-            y1 = max(y1 - margin * 2, 0)                # capture forehead
-            y2 = min(y2 + int(margin * 1.2), h - 1)     # capture chin
+            y1 = max(y1 - margin * 2, 0)  # capture forehead
+            y2 = min(y2 + int(margin * 1.2), h - 1)  # capture chin
 
             faces.append(image[y1:y2, x1:x2])
-        return faces
+        return faces, faces_coord
 
     @classmethod
     def create_image(cls, image, size: int = 200):
@@ -103,8 +104,8 @@ class Sorter(Init):
         image = Image.fromarray(image)
 
         transform = transforms.Compose([
-            transforms.ToTensor(),                                              # Convert the image to a tensor
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),    # Normalize the image
+            transforms.ToTensor(),  # Convert the image to a tensor
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),  # Normalize the image
         ])
 
         preprocessed_image = transform(image)
@@ -129,69 +130,92 @@ class Sorter(Init):
         """
         image_names = os.listdir(self.anchor)
 
-        def show_face(face):
-            cv.imshow('choose name', face)
-            cv.waitKey(0)
+        def show_face(_face):
+            choose_name = tk.Tk()
+            choose_name.title('choose name')
+            image = cv.cvtColor(_face, cv.COLOR_BGR2RGB)
+            image = Image.fromarray(image)
+            image.thumbnail((300, 300))
+            image = ImageTk.PhotoImage(image)
+            label = tk.Label(choose_name)
+            label.config(image=image)
+            label.image = image
+            label.pack(pady=10)
+            name_entry = tk.Entry(choose_name)
+            name_entry.pack(pady=10)
+            submit_button = tk.Button(choose_name, text='submit', command=lambda: get_name(name_entry, choose_name))
+            submit_button.pack(pady=10)
+            choose_name.mainloop()
 
-        def get_name():
-            name = input('choose person name: ')
-            self.anchors[name] = [Sorter.image_to_embedding(face), [], face]
-            Sorter.load_anchors.name_chosen_flag = True
-            return name
+        def get_name(name_entry, choose_name):
+            name = name_entry.get()
+            self.anchors[name] = [Sorter.image_to_embedding(face), {"60": [], "70": [], "80": [], "90": []}, face]
+            choose_name.destroy()
 
         for img_name in image_names:
             img_name = os.path.join(self.anchor, img_name)
-            faces = Sorter.extract_faces(img_name)
+            faces = Sorter.extract_faces(img_name)[0]
             for face in faces:
-                t1 = threading.Thread(target=show_face, args=(face,))
-                t2 = threading.Thread(target=get_name)
-
-                t1.start()
-                t2.start()
-
-                t1.join()
-                t2.join()
+                show_face(face)
         Sorter.log_simple_info('anchors loaded')
 
-    def sort(self):
+    def sort(self, path: str):
         """
-        Sort images to respective persons in the anchor images
-        using format:
+        sort in each folder the images and check if they are similar to the anchors images
+        :param path: path to the folder to sort
+        """
+        Sorter.log_simple_info(f'current folder: {path} - sorting...')
+        image_paths = os.listdir(os.path.join(self.root, path))
+        for image_path in (pbar := tqdm(image_paths, position=0, leave=True)):
+            pbar.set_description(f'current image: {image_path}')
+            image_path = os.path.join(self.root, path, image_path)
+            temp_f, face_cord = Sorter.extract_faces(image_path)
+            faces = [Sorter.image_to_embedding(face) for face in temp_f]
 
-        root folder
-                |__ sub dir 1
-                |__ sub dir 2
-                |__ ...
-        anchor images
+            for index, face in enumerate(faces):
+                for name, (em, _, _) in self.anchors.items():
+                    if (dist := Sorter.compare_pair(face, em)) >= config.COS_THRESH:
+                        self.anchors[name][1][(str(floor((dist * 10)) * 10) if dist < 1 else '90')] \
+                            .append((image_path, face_cord[index]))
+                        Sorter.log_simple_info('match!')
+                        break
+
+        Sorter.log_simple_info(f'folder {path} sorted')
+
+    def sort_wrapper(self):
+        threads = []
         """
+                Sort images to respective persons in the anchor images asynchronously
+                using format:
+
+                root folder
+                        |__ sub dir 1
+                        |__ sub dir 2
+                        |__ ...
+                anchor images
+                """
         folder_paths = os.listdir(self.root)
-
         for path in folder_paths:
-            Sorter.log_simple_info(f'current folder: {path}')
-            image_paths = os.listdir(os.path.join(self.root, path))
-
-            for image_path in tqdm(image_paths):
-                image_path = os.path.join(self.root, path, image_path)
-                temp_f = Sorter.extract_faces(image_path)
-                faces = [Sorter.image_to_embedding(face) for face in temp_f]
-
-                for index, face in enumerate(faces):
-                    for name, (em, _, _) in self.anchors.items():
-                        if (dist := Sorter.compare_pair(face, em)) >= config.COS_THRESH:
-                            self.anchors[name][1].append(image_path)
-                            Sorter.log_simple_info('match!')
-
-                            # save image in the folder
-                            cv.imwrite(os.path.join(self.root, name, f'{dist}.jpg'), temp_f[index])
-                            Sorter.log_simple_info(f"saved to {os.path.join(self.root, name, f'{dist}.jpg')}")
-                            break
-
-            for key, (_, paths, _) in self.anchors.items():
-                anc_path = os.path.join(self.root, str(key))
-                os.makedirs(anc_path, exist_ok=True)
-                for _path in paths:
-                    shutil.copy(_path, anc_path)
-                self.anchors[key][1] = []
+            threads.append(threading.Thread(target=self.sort, args=(path,)))
+            threads[-1].start()
+        # wait for all threads to finish
+        for thread in threads:
+            thread.join()
+        # save the results
+        for key, (_, paths_dict, _) in self.anchors.items():
+            anc_path = os.path.join(self.root, str(key))
+            os.makedirs(anc_path, exist_ok=True)
+            for quality in paths_dict.items():
+                os.makedirs(os.path.join(anc_path, quality[0]), exist_ok=True)
+                for _path, _face_cord in quality[1]:
+                    file_name = os.path.join(anc_path, quality[0], os.path.basename(_path))
+                    shutil.copy(_path, file_name)
+                    x1, y1, x2, y2 = _face_cord
+                    image = cv.imread(_path)
+                    cv.rectangle(image, (x1 * 2, y1 * 2), (x2 * 2, y2 * 2), (0, 255, 0), 2)
+                    cv.imwrite(file_name + '_marked.jpg',
+                               image)
+        Sorter.log_simple_info('sorting done')
 
     @staticmethod
     def log_simple_info(msg):
