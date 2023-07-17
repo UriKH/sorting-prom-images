@@ -4,24 +4,21 @@ import threading
 import torch
 import torchvision.transforms as transforms
 import cv2 as cv
-from PIL import Image, ImageTk
+from PIL import Image
 import numpy as np
-from tqdm import tqdm
 from colored import fg, attr
 from math import floor
-import tkinter as tk
 import config
-from initializer import Init
+from Gui.initGui import InitGui as Init
+from Gui.anchorWindow import ChooseAnchor
 
 
 class Sorter(Init):
-    def __init__(self, images_root: str, anchor_dir: str):
+    def __init__(self, images_root: str, anchor_dir: str, anchors: dict):
         super().__init__()
-        self.root = images_root
+        self.images_root = images_root
         self.anchor = anchor_dir
-
-        self.anchors = {}
-        self.load_anchors()
+        self.anchors = anchors
 
     @classmethod
     def extract_faces(cls, path: str) -> tuple[list, list]:
@@ -34,13 +31,13 @@ class Sorter(Init):
         h, w, _ = image.shape
 
         if image is None:
-            Sorter.log_simple_info(f'image was None - check it! {path}')
+            cls.log_simple_info(f'image was None - check it! {path}')
             return [], []
         else:
             image = cv.resize(image, (w // 2, h // 2))  # downscale image for faster execution
         h, w, _ = image.shape
 
-        faces_coord, conf = Sorter.mtcnn.detect(image)  # detect faces using MTCNN
+        faces_coord, conf = cls.mtcnn.detect(image)  # detect faces using MTCNN
 
         if faces_coord is None or len(faces_coord) == 0:
             return [], []
@@ -100,7 +97,7 @@ class Sorter(Init):
         :returns: embedding tensor
         """
         image = cv.cvtColor(image, cv.COLOR_BGR2RGB)
-        image = Sorter.create_image(image, 160)
+        image = cls.create_image(image, 160)
         image = Image.fromarray(image)
 
         transform = transforms.Compose([
@@ -110,8 +107,8 @@ class Sorter(Init):
 
         preprocessed_image = transform(image)
 
-        Sorter.resnet.classify = True
-        embedding = Sorter.resnet(preprocessed_image.unsqueeze(0).to(config.DEVICE))
+        cls.resnet.classify = True
+        embedding = cls.resnet(preprocessed_image.unsqueeze(0).to(config.DEVICE))
         return embedding
 
     @classmethod
@@ -124,65 +121,56 @@ class Sorter(Init):
         dist = torch.nn.functional.cosine_similarity(em1, em2)
         return dist.item()
 
-    def load_anchors(self):
+    @classmethod
+    def initialize_anchors(cls, anchor_path: str) -> dict:
         """
         Load faces from the anchor images
         """
-        image_names = os.listdir(self.anchor)
-
-        def show_face(_face):
-            choose_name = tk.Tk()
-            choose_name.title('choose name')
-            image = cv.cvtColor(_face, cv.COLOR_BGR2RGB)
-            image = Image.fromarray(image)
-            image.thumbnail((300, 300))
-            image = ImageTk.PhotoImage(image)
-            label = tk.Label(choose_name)
-            label.config(image=image)
-            label.image = image
-            label.pack(pady=10)
-            name_entry = tk.Entry(choose_name)
-            name_entry.pack(pady=10)
-            submit_button = tk.Button(choose_name, text='submit', command=lambda: get_name(name_entry, choose_name))
-            submit_button.pack(pady=10)
-            choose_name.mainloop()
-
-        def get_name(name_entry, choose_name):
-            name = name_entry.get()
-            self.anchors[name] = [Sorter.image_to_embedding(face), {"60": [], "70": [], "80": [], "90": []}, face]
-            choose_name.destroy()
-
+        image_names = os.listdir(anchor_path)
+        anchors = {}
         for img_name in image_names:
-            img_name = os.path.join(self.anchor, img_name)
-            faces = Sorter.extract_faces(img_name)[0]
+            img_name = os.path.join(anchor_path, img_name)
+            faces = cls.extract_faces(img_name)[0]
             for face in faces:
-                show_face(face)
-        Sorter.log_simple_info('anchors loaded')
+                ChooseAnchor.select_anchor_name(face, anchors, cls.image_to_embedding)
+
+        cls.log_simple_info('anchors loaded')
+        return anchors
 
     def sort(self, path: str):
         """
         sort in each folder the images and check if they are similar to the anchors images
         :param path: path to the folder to sort
         """
-        Sorter.log_simple_info(f'current folder: {path} - sorting...')
-        image_paths = os.listdir(os.path.join(self.root, path))
-        for image_path in (pbar := tqdm(image_paths, position=0, leave=True)):
-            pbar.set_description(f'current image: {image_path}')
-            image_path = os.path.join(self.root, path, image_path)
-            temp_f, face_cord = Sorter.extract_faces(image_path)
-            faces = [Sorter.image_to_embedding(face) for face in temp_f]
+        image_paths = os.listdir(os.path.join(self.images_root, path))
+        for index, image_path in enumerate(image_paths):
+            image_path = os.path.join(self.images_root, path, image_path)
+            temp_f, face_cord = self.extract_faces(image_path)
+            faces = [self.image_to_embedding(face) for face in temp_f]
 
-            for index, face in enumerate(faces):
+            for i, face in enumerate(faces):
                 for name, (em, _, _) in self.anchors.items():
-                    if (dist := Sorter.compare_pair(face, em)) >= config.COS_THRESH:
+                    if (dist := self.compare_pair(face, em)) >= config.COS_THRESH:
                         self.anchors[name][1][(str(floor((dist * 10)) * 10) if dist < 1 else '90')] \
-                            .append((image_path, face_cord[index]))
-                        Sorter.log_simple_info('match!')
+                            .append((image_path, face_cord[i]))
+                        self.log_simple_info('match!')
                         break
+            yield int(index / len(image_paths) * 100)
 
-        Sorter.log_simple_info(f'folder {path} sorted')
+        yield 100
+        self.log_simple_info(f'folder {path} sorted')
 
-    def sort_wrapper(self):
+    def sort_wrapper(self, path, index):
+        """
+        wrapper for the sort function to check progress
+        :param path: path to the folder to check
+        :param index: index of the progress bar to update
+        """
+        for image_number in self.sort(path):
+            print(f'{image_number}%' if image_number < 100 else 'done')
+            self.progress_queue.put((index, image_number))
+
+    def handle_sorting(self):
         threads = []
         """
                 Sort images to respective persons in the anchor images asynchronously
@@ -194,16 +182,16 @@ class Sorter(Init):
                         |__ ...
                 anchor images
                 """
-        folder_paths = os.listdir(self.root)
-        for path in folder_paths:
-            threads.append(threading.Thread(target=self.sort, args=(path,)))
+        folder_paths = os.listdir(self.images_root)
+        for index, path in enumerate(folder_paths):
+            threads.append(threading.Thread(target=self.sort_wrapper, args=(path, index,)))
             threads[-1].start()
         # wait for all threads to finish
         for thread in threads:
             thread.join()
         # save the results
         for key, (_, paths_dict, _) in self.anchors.items():
-            anc_path = os.path.join(self.root, str(key))
+            anc_path = os.path.join(self.images_root, str(key))
             os.makedirs(anc_path, exist_ok=True)
             for quality in paths_dict.items():
                 os.makedirs(os.path.join(anc_path, quality[0]), exist_ok=True)
@@ -215,7 +203,7 @@ class Sorter(Init):
                     cv.rectangle(image, (x1 * 2, y1 * 2), (x2 * 2, y2 * 2), (0, 255, 0), 2)
                     cv.imwrite(file_name + '_marked.jpg',
                                image)
-        Sorter.log_simple_info('sorting done')
+        self.log_simple_info('sorting done')
 
     @staticmethod
     def log_simple_info(msg):
