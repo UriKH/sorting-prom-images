@@ -6,7 +6,7 @@ import torchvision.transforms as transforms
 import cv2 as cv
 from PIL import Image
 import numpy as np
-from colored import fg, attr
+# from colored import fg, attr
 from math import floor
 import config
 from Gui.initGui import InitGui as Init
@@ -28,12 +28,12 @@ class Sorter(Init):
         :returns: list of cropped faces and their coordinates
         """
         if os.path.isdir(path):
-            cls.log_simple_info(f'path was a directory - check it! {path}')
+            # cls.log_simple_info(f'path was a directory - check it! {path}')
             return [], []
 
         image = cv.imread(path)
         if image is None:
-            cls.log_simple_info(f'image was None - check it! {path}')
+            # cls.log_simple_info(f'image was None - check it! {path}')
             return [], []
         else:
             h, w, _ = image.shape
@@ -136,7 +136,7 @@ class Sorter(Init):
             for face in faces:
                 ChooseAnchor.select_anchor_name(face, anchors, cls.image_to_embedding)
 
-        cls.log_simple_info('anchors loaded')
+        # cls.log_simple_info('anchors loaded')
         return anchors
 
     def sort(self, path: str):
@@ -155,12 +155,12 @@ class Sorter(Init):
                     if (dist := self.compare_pair(face, em)) >= config.COS_THRESH:
                         self.anchors[name][1][(str(floor((dist * 10)) * 10) if dist < 1 else '90')] \
                             .append((image_path, face_cord[i]))
-                        self.log_simple_info('match!')
+                        # self.log_simple_info('match!')
                         break
             yield int(index / len(image_paths) * 100)
 
         yield 100
-        self.log_simple_info(f'folder {path} sorted')
+        # self.log_simple_info(f'folder {path} sorted')
 
     def sort_wrapper(self, path, index):
         """
@@ -204,9 +204,10 @@ class Sorter(Init):
                     cv.rectangle(image, (x1 * 2, y1 * 2), (x2 * 2, y2 * 2), (0, 255, 0), 2)
                     cv.imwrite(file_name + '_marked.jpg',
                                image)
-        self.log_simple_info('sorting done')
+        # self.log_simple_info('sorting done')
         self.done_queue.put(True)
 
     @staticmethod
     def log_simple_info(msg):
-        print(f'{fg("light_blue")}[INFO] {attr("reset")}{msg}')
+        pass
+        # print(f'{fg("light_blue")}[INFO] {attr("reset")}{msg}')

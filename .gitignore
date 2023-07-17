@@ -1,1 +1,6 @@
 .idea
+.git
+venv
+main.spec
+dist
+build
