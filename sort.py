@@ -27,15 +27,17 @@ class Sorter(Init):
         :param path: path to the image in disk
         :returns: list of cropped faces and their coordinates
         """
-        image = cv.imread(path)
-        h, w, _ = image.shape
+        if os.path.isdir(path):
+            cls.log_simple_info(f'path was a directory - check it! {path}')
+            return [], []
 
+        image = cv.imread(path)
         if image is None:
             cls.log_simple_info(f'image was None - check it! {path}')
             return [], []
         else:
+            h, w, _ = image.shape
             image = cv.resize(image, (w // 2, h // 2))  # downscale image for faster execution
-        h, w, _ = image.shape
 
         faces_coord, conf = cls.mtcnn.detect(image)  # detect faces using MTCNN
 
@@ -167,7 +169,6 @@ class Sorter(Init):
         :param index: index of the progress bar to update
         """
         for image_number in self.sort(path):
-            print(f'{image_number}%' if image_number < 100 else 'done')
             self.progress_queue.put((index, image_number))
 
     def handle_sorting(self):
@@ -204,6 +205,7 @@ class Sorter(Init):
                     cv.imwrite(file_name + '_marked.jpg',
                                image)
         self.log_simple_info('sorting done')
+        self.done_queue.put(True)
 
     @staticmethod
     def log_simple_info(msg):

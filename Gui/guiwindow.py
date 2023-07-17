@@ -49,6 +49,8 @@ class GuiWindow(Init):
 
     def update_progress_bar(self):
         try:
+            if not self.sort:
+                return  # if the sorting is not started yet, do nothing
             index, value = self.progress_queue.get_nowait()
             self.progress_bar_list[index]['value'] = value
             if value == 100:
@@ -56,11 +58,30 @@ class GuiWindow(Init):
                     text="Folder " + self.progress_bar_label_list[index].cget("text").split(" ")[1] + " Done!")
             else:
                 self.progress_bar_label_list[index].config(
-                    text="Folder " + self.progress_bar_label_list[index].cget("text").split(" ")[1] + " " + str(value) + "%")
+                    text="Folder " + self.progress_bar_label_list[index].cget("text").split(" ")[1] + " " + str(
+                        value) + "%")
 
             self.root.after(10, self.update_progress_bar)
         except queue.Empty:
             self.root.after(10, self.update_progress_bar)
+
+    def check_sorting_status(self):
+        try:
+            status = self.done_queue.get_nowait()
+            if status:
+                self.status_label.config(text="Done!")
+                self.start_btn.config(state=tk.NORMAL)
+                self.select_anchor_btn.config(state=tk.NORMAL)
+                self.select_anchor_btn.config(text="Select Anchor Folder", command=self.select_anchor_folder)
+                self.anchor_folder_label.config(text="")
+                self.prom_photos_folder_label.config(text="")
+                self.sort = None
+                self.anchor_folder = None
+                self.prom_photos_folders = None
+                return
+            self.root.after(10, self.check_sorting_status)
+        except queue.Empty:
+            self.root.after(10, self.check_sorting_status)
 
     def start_sorting(self):
         if not self.anchor_folder or not self.prom_photos_folders:
@@ -79,6 +100,14 @@ class GuiWindow(Init):
         self.status_label.config(text="Sorting...")
         anchors = Sorter.initialize_anchors(self.anchor_folder)
         self.sort = Sorter(self.prom_photos_folders, self.anchor_folder, anchors)
+        # clean progress bar list
+        for progress_bar in self.progress_bar_list:
+            progress_bar.destroy()
+        self.progress_bar_list = []
+        # clean progress bar label list
+        for progress_bar_label in self.progress_bar_label_list:
+            progress_bar_label.destroy()
+        self.progress_bar_label_list = []
         # create progress bars according to the number of folders
         for i, folder in enumerate(os.listdir(self.prom_photos_folders)):
             # create progress bar
@@ -94,6 +123,7 @@ class GuiWindow(Init):
             self.progress_bar_label_list.append(progress_label)
         threading.Thread(target=self.sort.handle_sorting).start()
         self.root.after(10, self.update_progress_bar)
+        self.root.after(10, self.check_sorting_status)
 
     def on_close(self):
         if messagebox.askokcancel("Quit", "Do you want to quit?"):

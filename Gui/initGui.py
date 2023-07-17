@@ -6,6 +6,7 @@ from initializer import Init
 class InitGui(Init):
     root = None
     progress_queue = None
+    done_queue = None
 
     def __init__(self):
         super().__init__()
@@ -13,3 +14,5 @@ class InitGui(Init):
             InitGui.root = tk.Tk()
         if not InitGui.progress_queue:
             InitGui.progress_queue = queue.Queue()
+        if not InitGui.done_queue:
+            InitGui.done_queue = queue.Queue()
